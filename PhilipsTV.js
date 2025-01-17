@@ -6,17 +6,26 @@ class PhilipsTV {
     channelList = [];
     volume = {
         min: 0,
-        max: 0,
-        current: 0,
+        max: 60,
+        current: 3,
         muted: false
     };
+    powerstate = false;
+    ambilight = {
+        styleName: "Lounge light",
+        isExpert: false,
+        menuSetting: "ISF",
+        stringValue: "Warm White"
+    };
 
-    constructor(config) {
+    constructor(log, config) {
         const wolURL = config.wol_url;
         const baseURL = `https://${config.ip_address}:1926/6/`;
 
+        this.log = log;
         this.api = (path, body = null) => {
             return new Promise((success, fail) => {
+                log("Request to TV %s %s", path, body);
                 request({
                     rejectUnauthorized: false,
                     timeout: 3000,
@@ -30,8 +39,10 @@ class PhilipsTV {
                     url: `${baseURL}${path}`
                 }, (error, response, body) => {
                     if (error) {
+                        log("Request error %s", error);
                         fail(error);
                     } else {
+                        log("Response from TV %s", body);
                         if (body && body.indexOf("{") !== -1) {
                             try {
                                 success(JSON.parse(body))
@@ -48,14 +59,17 @@ class PhilipsTV {
 
         this.wake = (callback) => {
             if (!wolURL) {
+                log("WOL disabled.")
                 callback(null, "EMPTY");
                 return;
             }
             if (wolURL.substring(0, 3).toUpperCase() === "WOL") {
                 //Wake on lan request
                 const macAddress = wolURL.replace(/^WOL[:]?[\/]?[\/]?/ig, "");
+                log("Attempting WOL %s", macAddress)
                 wol.wake(macAddress, function (error) {
                     if (error) {
+                        log("WOL failed: %s", error)
                         callback(error);
                     } else {
                         callback(null, "OK");
@@ -73,24 +87,23 @@ class PhilipsTV {
 
     getPowerState = (callback) => {
         this.api("powerstate").then((data) => {
-            callback && callback(null, data.powerstate === "On")
+            this.powerstate = data.powerstate === "On";
+            callback && callback(null, this.powerstate)
         }).catch((e) => {
-            callback && callback(null, false)
+            callback && callback(null, this.powerstate)
         })
     };
 
     setPowerState = (value, callback) => {
-        if (value) {
-            this.wake((wolState) => {
-            });
-        }
-
-        this.api("powerstate", {
-            powerstate: value ? "On" : "Standby"
-        }).then((data) => {
-            callback(null, value)
-        }).catch(() => {
-            callback(null, false)
+        this.wake((error, wolState) => {
+            this.api("powerstate", {
+                powerstate: value ? "On" : "Standby"
+            }).then((data) => {
+                this.powerstate = value;
+                callback(null, value)
+            }).catch(() => {
+                callback(null, this.powerstate)
+            }); 
         });
     };
 
@@ -165,50 +178,76 @@ class PhilipsTV {
                 ...this.volume,
                 ...data
             };
-            const volume = Math.floor(((this.volume.current - this.volume.min) / (this.volume.max - this.volume.min)) * 100);
-            callback(null, volume)
+            callback(null, this.calculateCurrentVolume())
         }).catch(() => {
-            callback(null, false)
+            callback(null, this.calculateCurrentVolume())
         })
     };
 
+    calculateCurrentVolume = () => {
+        let maxRange = this.volume.max - this.volume.min;
+        if (maxRange <= 0) {
+            maxRange = 1;
+        }
+        return Math.floor((1.0 * (this.volume.current - this.volume.min) / maxRange) * 100);
+    };
+
     setVolumeState = (value, callback) => {
-        this.volume.current = Math.round(this.volume.min + (this.volume.max - this.volume.min) * (value / 100));
         this.api("audio/volume", this.volume).then(() => {
-            callback(null, value);
+            this.volume.current = Math.round(this.volume.min + (this.volume.max - this.volume.min) * (value / 100.0));
+            callback(null, this.calculateCurrentVolume());
         }).catch(() => {
-            callback(null, false)
+            callback(null, this.calculateCurrentVolume());
         });
     };
 
-    setMuteState = (value, callback) => {
-        this.volume.muted = !value;
-        this.api("audio/volume", this.volume).then(() => {
-            callback(null, value);
+    getMuteState = (callback) => {
+        this.api("audio/volume").then(() => {
+            this.volume = {
+                ...this.volume,
+                ...data
+            };
+            callback(null, this.volume.muted);
         }).catch(() => {
-            callback(null, false)
+            callback(null, this.volume.muted);
+        })
+    };
+
+    setMuteState = (ignoredValue, callback) => {
+        this.getMuteState((ignored, value) => {
+            this.api("audio/volume", this.volume).then(() => {
+                this.volume.muted = !value;
+                callback(null, this.volume.muted);
+            }).catch(() => {
+                callback(null, this.volume.muted);
+            });
         });
     };
 
     setAmbilightState = (value, callback) => {
         if (value) {
-            this.api("ambilight/currentconfiguration", {
-                styleName: "FOLLOW_VIDEO",
-                isExpert: false,
-                menuSetting: "NATURAL"
-            }).then((data) => {
-                callback(null, true)
+            this.api("ambilight/currentconfiguration", this.ambilight).then((data) => {
+                this.api("ambilight/power", {
+                    power: "On"
+                }).then((ignored) => {
+                    callback(null, true)
+                }).catch(() => {
+                    callback(null, false)
+                })
             }).catch(() => {
                 callback(null, false)
             });
         } else {
-            this.api("ambilight/power", {
-                power: "Off"
-            }).then((data) => {
-                callback(null, false)
-            }).catch(() => {
-                callback(null, false)
-            });
+            this.api("ambilight/currentconfiguration").then((data) => {
+                this.ambilight = {...data};
+                this.api("ambilight/power", {
+                    power: "Off"
+                }).then((data) => {
+                    callback(null, false)
+                }).catch(() => {
+                    callback(null, false)
+                });
+            })
         }
     }
 }

@@ -19,7 +19,7 @@ class PhilipsTvAccessory {
 
   constructor(log, config) {
     this.config = { ...this.config, ...config };
-    this.PhilipsTV = new PhilipsTV(config);
+    this.PhilipsTV = new PhilipsTV(log, config);
 
     this.registerAccessoryInformationService();
     this.registerTelevisionService();
@@ -63,8 +63,11 @@ class PhilipsTvAccessory {
     );
     power.on("get", this.PhilipsTV.getPowerState);
     power.on("set", (value, callback) => {
-      this.state.power = value;
-      this.PhilipsTV.setPowerState(value, callback);
+      this.PhilipsTV.setPowerState(value, (param, newState) => {
+        this.state.power = newState;
+        power.updateValue(newState);
+        callback(param, newState);
+      })
     });
 
     tvService
@@ -183,7 +186,7 @@ class PhilipsTvAccessory {
         callback(null, 1);
       })
       .on("set", (value, callback) => {
-        this.PhilipsTV.setMuteState(value, callback);
+        this.PhilipsTV.setMuteState(!value, callback)
       });
     const volumeLevel = this.volumeService.getCharacteristic(
       Characteristic.RotationSpeed
@@ -204,6 +207,43 @@ class PhilipsTvAccessory {
         });
       }, poll_status_interval * 1000);
     }
+
+    this.speakerService = new Service.TelevisionSpeaker(this.name + ' Volume', 'tvSpeakerService');
+		this.speakerService
+			.setCharacteristic(Characteristic.Name, this.name)
+			.setCharacteristic(Characteristic.Active, Characteristic.Active.ACTIVE)
+			.setCharacteristic(Characteristic.VolumeControlType, Characteristic.VolumeControlType.ABSOLUTE);
+		const muteCharacteristics = this.speakerService
+			.getCharacteristic(Characteristic.Mute);
+
+    muteCharacteristics
+      .on('get', (callback) => this.PhilipsTV.getMuteState(callback))
+			.on('set', (value, callback) => {
+        this.PhilipsTV.setMuteState(value, (param, newState) => {
+          muteCharacteristics.updateValue(newState);
+          callback(param, newState);
+        })
+      });
+
+    
+		this.speakerService
+			.getCharacteristic(Characteristic.VolumeSelector)
+			.on('set', (state, callback) => {
+        this.PhilipsTV.sendKey(state ? "VolumeDown" : "VolumeUp");
+        callback(null, null);
+      });
+
+		this.speakerService
+		  .addCharacteristic(Characteristic.Volume)
+			.on('get', this.PhilipsTV.getVolumeState)
+			.on('set', (value, callback) => {
+        this.state.volume = value;
+        this.PhilipsTV.setVolumeState(value, callback);
+      });
+
+		this.tvService.addLinkedService(this.speakerService);
+		this.services.push(this.speakerService);
+
     this.services.push(this.volumeService);
   };
 
