@@ -1,6 +1,8 @@
 const request = require("request");
 const wol = require('wake_on_lan');
 
+import Api from './api.js';
+
 class PhilipsTV {
     api = null;
     channelList = [];
@@ -20,42 +22,10 @@ class PhilipsTV {
 
     constructor(log, config) {
         const wolURL = config.wol_url;
-        const baseURL = `https://${config.ip_address}:1926/6/`;
 
         this.log = log;
-        this.api = (path, body = null) => {
-            return new Promise((success, fail) => {
-                log("Request to TV %s %s", path, body);
-                request({
-                    rejectUnauthorized: false,
-                    timeout: 3000,
-                    auth: {
-                        user: config.username,
-                        pass: config.password,
-                        sendImmediately: false
-                    },
-                    method: body ? "POST" : "GET",
-                    body: typeof body === "object" ? JSON.stringify(body) : body,
-                    url: `${baseURL}${path}`
-                }, (error, response, body) => {
-                    if (error) {
-                        log("Request error %s", error);
-                        fail(error);
-                    } else {
-                        log("Response from TV %s", body);
-                        if (body && body.indexOf("{") !== -1) {
-                            try {
-                                success(JSON.parse(body))
-                            } catch (e) {
-                                fail(e);
-                            }
-                        } else {
-                            success({});
-                        }
-                    }
-                })
-            })
-        };
+
+        this.api = new Api(log, config);
 
         this.wake = (callback) => {
             if (!wolURL) {
@@ -86,7 +56,7 @@ class PhilipsTV {
     }
 
     getPowerState = (callback) => {
-        this.api("powerstate").then((data) => {
+        this.api.call("GET", "powerstate").then((data) => {
             this.powerstate = data.powerstate === "On";
             callback && callback(null, this.powerstate)
         }).catch((e) => {
@@ -96,7 +66,7 @@ class PhilipsTV {
 
     setPowerState = (value, callback) => {
         this.wake((error, wolState) => {
-            this.api("powerstate", {
+            this.api.call("POST", "powerstate", {
                 powerstate: value ? "On" : "Standby"
             }).then((data) => {
                 this.powerstate = value;
@@ -107,10 +77,10 @@ class PhilipsTV {
         });
     };
 
-    sendKey = key => this.api("input/key", {key});
-    setChannel = ccid => this.api("activities/tv", {channel: {ccid}, channelList: {id: "allsat"}});
-    launchApp = app => this.api("activities/launch", app);
-    getChannelList = () => this.api("channeldb/tv/channelLists/all").then((response) => {
+    sendKey = key => this.api.call("POST", "input/key", {key});
+    setChannel = ccid => this.api.call("POST", "activities/tv", {channel: {ccid}, channelList: {id: "allsat"}});
+    launchApp = app => this.api.call("POST", "activities/launch", app);
+    getChannelList = () => this.api.call("GET", "channeldb/tv/channelLists/all").then((response) => {
         if (response) {
             return response.Channel;
         }
@@ -127,12 +97,12 @@ class PhilipsTV {
     getCurrentSource = (inputs) => {
         return new Promise(async (resolve, reject) => {
             try {
-                const current = await this.api("activities/current");
+                const current = await this.api.call("GET", "activities/current");
                 const currentPkgname = current.component.packageName;
                 let currentTvPreset = 0;
                 let selected = 0;
                 if (currentPkgname === "org.droidtv.channels" || currentPkgname === "org.droidtv.playtv") {
-                    const currentTV = await this.api("activities/tv");
+                    const currentTV = await this.api.call("GET", "activities/tv");
                     currentTvPreset = parseInt(currentTV.channel.preset, 10);
                 }
                 inputs.forEach((item, index) => {
@@ -165,7 +135,7 @@ class PhilipsTV {
     };
 
     getAmbilightState = (callback) => {
-        this.api("ambilight/power").then((data) => {
+        this.api.call("GET", "ambilight/power").then((data) => {
             callback(null, data.power === "On")
         }).catch(() => {
             callback(null, false)
@@ -173,7 +143,7 @@ class PhilipsTV {
     };
 
     getVolumeState = (callback) => {
-        this.api("audio/volume").then((data) => {
+        this.api.call("GET", "audio/volume").then((data) => {
             this.volume = {
                 ...this.volume,
                 ...data
@@ -193,7 +163,7 @@ class PhilipsTV {
     };
 
     setVolumeState = (value, callback) => {
-        this.api("audio/volume", this.volume).then(() => {
+        this.api.call("POST", "audio/volume", this.volume).then(() => {
             this.volume.current = Math.round(this.volume.min + (this.volume.max - this.volume.min) * (value / 100.0));
             callback(null, this.calculateCurrentVolume());
         }).catch(() => {
@@ -202,7 +172,7 @@ class PhilipsTV {
     };
 
     getMuteState = (callback) => {
-        this.api("audio/volume").then(() => {
+        this.api.call("GET", "audio/volume").then(() => {
             this.volume = {
                 ...this.volume,
                 ...data
@@ -215,7 +185,7 @@ class PhilipsTV {
 
     setMuteState = (ignoredValue, callback) => {
         this.getMuteState((ignored, value) => {
-            this.api("audio/volume", this.volume).then(() => {
+            this.api.call("POST", "audio/volume", this.volume).then(() => {
                 this.volume.muted = !value;
                 callback(null, this.volume.muted);
             }).catch(() => {
@@ -226,8 +196,8 @@ class PhilipsTV {
 
     setAmbilightState = (value, callback) => {
         if (value) {
-            this.api("ambilight/currentconfiguration", this.ambilight).then((data) => {
-                this.api("ambilight/power", {
+            this.api.call("POST", "ambilight/currentconfiguration", this.ambilight).then((data) => {
+                this.api.call("POST", "ambilight/power", {
                     power: "On"
                 }).then((ignored) => {
                     callback(null, true)
@@ -238,9 +208,9 @@ class PhilipsTV {
                 callback(null, false)
             });
         } else {
-            this.api("ambilight/currentconfiguration").then((data) => {
+            this.api.call("GET", "ambilight/currentconfiguration").then((data) => {
                 this.ambilight = {...data};
-                this.api("ambilight/power", {
+                this.api.call("POST", "ambilight/power", {
                     power: "Off"
                 }).then((data) => {
                     callback(null, false)
